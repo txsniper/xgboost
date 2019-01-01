@@ -74,6 +74,7 @@ struct CLIParam : public dmlc::Parameter<CLIParam> {
   std::vector<std::pair<std::string, std::string> > cfg;
 
   // declare parameters
+  // 下面大括号中的 DMLC_DECLARE_FIELD语句填充 __DECLARE__ 函数
   DMLC_DECLARE_PARAMETER(CLIParam) {
     // NOTE: declare everything except eval_data_paths.
     DMLC_DECLARE_FIELD(task).set_default(kTrain)
@@ -139,6 +140,7 @@ struct CLIParam : public dmlc::Parameter<CLIParam> {
       save_period = 0;
       this->cfg.emplace_back(std::make_pair("silent", "0"));
     }
+    // 数据切分模型, 如果是分布式需要进行数据切分
     if (dsplit == 0 && rabit::IsDistributed()) {
       dsplit = 2;
     }
@@ -341,14 +343,18 @@ int CLIRunTask(int argc, char *argv[]) {
   }
   rabit::Init(argc, argv);
 
+  // 保存训练参数
+  // eg: ../../xgboost mushroom.conf max_depth=6
   std::vector<std::pair<std::string, std::string> > cfg;
   cfg.emplace_back("seed", "0");
 
+  // argv[1]: 配置文件
   common::ConfigIterator itr(argv[1]);
   while (itr.Next()) {
     cfg.emplace_back(std::string(itr.Name()), std::string(itr.Val()));
   }
 
+  // 其他的参数: 如 max_depth=6
   for (int i = 2; i < argc; ++i) {
     char name[256], val[256];
     if (sscanf(argv[i], "%[^=]=%s", name, val) == 2) {
