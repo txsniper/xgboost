@@ -43,8 +43,10 @@ class PeekableInStream : public dmlc::Stream {
   }
 
   size_t PeekRead(void* dptr, size_t size) {
+    // 检查buffer_空闲空间
     size_t nbuffer = buffer_.length() - buffer_ptr_;
     if (nbuffer < size) {
+      // 空间不够，重新设置buffer_和buffer_ptr_
       buffer_ = buffer_.substr(buffer_ptr_, buffer_.length());
       buffer_ptr_ = 0;
       buffer_.resize(size);

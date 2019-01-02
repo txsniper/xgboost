@@ -158,6 +158,7 @@ DMatrix* DMatrix::Load(const std::string& uri,
     fname = uri.substr(0, dlm_pos);
     CHECK_EQ(cache_file.find('#'), std::string::npos)
         << "Only one `#` is allowed in file path for cache file specification.";
+    // 分布式模式下
     if (load_row_split) {
       std::ostringstream os;
       std::vector<std::string> cache_shards = common::Split(cache_file, ':');
@@ -196,13 +197,16 @@ DMatrix* DMatrix::Load(const std::string& uri,
                  << " of " << npart << " parts";
   }
   // legacy handling of binary data loading
+  // 自动加载: SimpleCSRSource 格式
   if (file_format == "auto" && npart == 1) {
     int magic;
     std::unique_ptr<dmlc::Stream> fi(dmlc::Stream::Create(fname.c_str(), "r", true));
     if (fi != nullptr) {
+      // 检查文件开头是否为 kMagic int
       common::PeekableInStream is(fi.get());
       if (is.PeekRead(&magic, sizeof(magic)) == sizeof(magic) &&
           magic == data::SimpleCSRSource::kMagic) {
+        // 加载进入 DMatrix     
         std::unique_ptr<data::SimpleCSRSource> source(new data::SimpleCSRSource());
         source->LoadBinary(&is);
         DMatrix* dmat = DMatrix::Create(std::move(source), cache_file);
@@ -215,6 +219,7 @@ DMatrix* DMatrix::Load(const std::string& uri,
     }
   }
 
+  // 其他格式，需要调用注册的Parser处理
   std::unique_ptr<dmlc::Parser<uint32_t> > parser(
       dmlc::Parser<uint32_t>::Create(fname.c_str(), partid, npart, file_format.c_str()));
   DMatrix* dmat = DMatrix::Create(parser.get(), cache_file);
