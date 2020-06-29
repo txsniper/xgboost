@@ -15,12 +15,16 @@
  */
 package ml.dmlc.xgboost4j.java;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.*;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 
 /**
  * trainer for xgboost
@@ -108,6 +112,146 @@ public class XGBoost {
     return train(dtrain, params, round, watches, metrics, obj, eval, earlyStoppingRound, null);
   }
 
+  private static void saveCheckpoint(
+          Booster booster,
+          int iter,
+          Set<Integer> checkpointIterations,
+          ExternalCheckpointManager ecm) throws XGBoostError {
+    try {
+      if (checkpointIterations.contains(iter)) {
+        ecm.updateCheckpoint(booster);
+      }
+    } catch (Exception e) {
+      logger.error("failed to save checkpoint in XGBoost4J at iteration " + iter, e);
+      throw new XGBoostError("failed to save checkpoint in XGBoost4J at iteration" + iter, e);
+    }
+  }
+
+  public static Booster trainAndSaveCheckpoint(
+      DMatrix dtrain,
+      Map<String, Object> params,
+      int numRounds,
+      Map<String, DMatrix> watches,
+      float[][] metrics,
+      IObjective obj,
+      IEvaluation eval,
+      int earlyStoppingRounds,
+      Booster booster,
+      int checkpointInterval,
+      String checkpointPath,
+      FileSystem fs) throws XGBoostError, IOException {
+    //collect eval matrixs
+    String[] evalNames;
+    DMatrix[] evalMats;
+    float bestScore;
+    int bestIteration;
+    List<String> names = new ArrayList<String>();
+    List<DMatrix> mats = new ArrayList<DMatrix>();
+    Set<Integer> checkpointIterations = new HashSet<>();
+    ExternalCheckpointManager ecm = null;
+    if (checkpointPath != null) {
+      ecm = new ExternalCheckpointManager(checkpointPath, fs);
+    }
+
+    for (Map.Entry<String, DMatrix> evalEntry : watches.entrySet()) {
+      names.add(evalEntry.getKey());
+      mats.add(evalEntry.getValue());
+    }
+
+    evalNames = names.toArray(new String[names.size()]);
+    evalMats = mats.toArray(new DMatrix[mats.size()]);
+    if (isMaximizeEvaluation(params)) {
+      bestScore = -Float.MAX_VALUE;
+    } else {
+      bestScore = Float.MAX_VALUE;
+    }
+    bestIteration = 0;
+    metrics = metrics == null ? new float[evalNames.length][numRounds] : metrics;
+
+    //collect all data matrixs
+    DMatrix[] allMats;
+    if (evalMats.length > 0) {
+      allMats = new DMatrix[evalMats.length + 1];
+      allMats[0] = dtrain;
+      System.arraycopy(evalMats, 0, allMats, 1, evalMats.length);
+    } else {
+      allMats = new DMatrix[1];
+      allMats[0] = dtrain;
+    }
+
+    //initialize booster
+    if (booster == null) {
+      // Start training on a new booster
+      booster = new Booster(params, allMats);
+      booster.loadRabitCheckpoint();
+    } else {
+      // Start training on an existing booster
+      booster.setParams(params);
+    }
+
+    if (ecm != null) {
+      checkpointIterations = new HashSet<>(ecm.getCheckpointRounds(checkpointInterval, numRounds));
+    }
+
+    // begin to train
+    for (int iter = booster.getVersion() / 2; iter < numRounds; iter++) {
+      if (booster.getVersion() % 2 == 0) {
+        if (obj != null) {
+          booster.update(dtrain, obj);
+        } else {
+          booster.update(dtrain, iter);
+        }
+        saveCheckpoint(booster, iter, checkpointIterations, ecm);
+        booster.saveRabitCheckpoint();
+      }
+
+      //evaluation
+      if (evalMats.length > 0) {
+        float[] metricsOut = new float[evalMats.length];
+        String evalInfo;
+        if (eval != null) {
+          evalInfo = booster.evalSet(evalMats, evalNames, eval, metricsOut);
+        } else {
+          evalInfo = booster.evalSet(evalMats, evalNames, iter, metricsOut);
+        }
+        for (int i = 0; i < metricsOut.length; i++) {
+          metrics[i][iter] = metricsOut[i];
+        }
+
+        // If there is more than one evaluation datasets, the last one would be used
+        // to determinate early stop.
+        float score = metricsOut[metricsOut.length - 1];
+        if (isMaximizeEvaluation(params)) {
+          // Update best score if the current score is better (no update when equal)
+          if (score > bestScore) {
+            bestScore = score;
+            bestIteration = iter;
+          }
+        } else {
+          if (score < bestScore) {
+            bestScore = score;
+            bestIteration = iter;
+          }
+        }
+        if (earlyStoppingRounds > 0) {
+          if (shouldEarlyStop(earlyStoppingRounds, iter, bestIteration)) {
+            Rabit.trackerPrint(String.format(
+                    "early stopping after %d rounds away from the best iteration",
+                    earlyStoppingRounds));
+            break;
+          }
+        }
+        if (Rabit.getRank() == 0 && shouldPrint(params, iter)) {
+          if (shouldPrint(params, iter)){
+            Rabit.trackerPrint(evalInfo + '\n');
+          }
+        }
+      }
+      booster.saveRabitCheckpoint();
+    }
+    return booster;
+  }
+
   /**
    * Train a booster given parameters.
    *
@@ -136,120 +280,62 @@ public class XGBoost {
           IEvaluation eval,
           int earlyStoppingRounds,
           Booster booster) throws XGBoostError {
-
-    //collect eval matrixs
-    String[] evalNames;
-    DMatrix[] evalMats;
-    List<String> names = new ArrayList<String>();
-    List<DMatrix> mats = new ArrayList<DMatrix>();
-
-    for (Map.Entry<String, DMatrix> evalEntry : watches.entrySet()) {
-      names.add(evalEntry.getKey());
-      mats.add(evalEntry.getValue());
+    try {
+      return trainAndSaveCheckpoint(dtrain, params, round, watches, metrics, obj, eval,
+              earlyStoppingRounds, booster,
+              -1, null, null);
+    } catch (IOException e) {
+      logger.error("training failed in xgboost4j", e);
+      throw new XGBoostError("training failed in xgboost4j ", e);
     }
-
-    evalNames = names.toArray(new String[names.size()]);
-    evalMats = mats.toArray(new DMatrix[mats.size()]);
-    metrics = metrics == null ? new float[evalNames.length][round] : metrics;
-
-    //collect all data matrixs
-    DMatrix[] allMats;
-    if (evalMats.length > 0) {
-      allMats = new DMatrix[evalMats.length + 1];
-      allMats[0] = dtrain;
-      System.arraycopy(evalMats, 0, allMats, 1, evalMats.length);
-    } else {
-      allMats = new DMatrix[1];
-      allMats[0] = dtrain;
-    }
-
-    //initialize booster
-    if (booster == null) {
-      // Start training on a new booster
-      booster = new Booster(params, allMats);
-      booster.loadRabitCheckpoint();
-    } else {
-      // Start training on an existing booster
-      booster.setParams(params);
-    }
-
-    //begin to train
-    for (int iter = booster.getVersion() / 2; iter < round; iter++) {
-      if (booster.getVersion() % 2 == 0) {
-        if (obj != null) {
-          booster.update(dtrain, obj);
-        } else {
-          booster.update(dtrain, iter);
-        }
-        booster.saveRabitCheckpoint();
-      }
-
-      //evaluation
-      if (evalMats.length > 0) {
-        float[] metricsOut = new float[evalMats.length];
-        String evalInfo;
-        if (eval != null) {
-          evalInfo = booster.evalSet(evalMats, evalNames, eval, metricsOut);
-        } else {
-          evalInfo = booster.evalSet(evalMats, evalNames, iter, metricsOut);
-        }
-        for (int i = 0; i < metricsOut.length; i++) {
-          metrics[i][iter] = metricsOut[i];
-        }
-        if (earlyStoppingRounds > 0) {
-          boolean onTrack = judgeIfTrainingOnTrack(params, earlyStoppingRounds, metrics, iter);
-          if (!onTrack) {
-            String reversedDirection = getReversedDirection(params);
-            Rabit.trackerPrint(String.format(
-                    "early stopping after %d %s rounds", earlyStoppingRounds, reversedDirection));
-            break;
-          }
-        }
-        if (Rabit.getRank() == 0) {
-          Rabit.trackerPrint(evalInfo + '\n');
-        }
-      }
-      booster.saveRabitCheckpoint();
-    }
-    return booster;
   }
 
-  static boolean judgeIfTrainingOnTrack(
-          Map<String, Object> params, int earlyStoppingRounds, float[][] metrics, int iter) {
-    boolean maximizeEvaluationMetrics = getMetricsExpectedDirection(params);
-    boolean onTrack = false;
-    // we don't need to consider iterations before reaching to `earlyStoppingRounds`th iteration
-    if (iter < earlyStoppingRounds - 1) {
-      return true;
-    }
-    for (int metricsId = metrics.length == 1 ? 0 : 1; metricsId < metrics.length; metricsId++) {
-      float[] criterion = metrics[metricsId];
-      for (int shift = 0; shift < earlyStoppingRounds - 1; shift++) {
-        // the initial value of onTrack is false and if the metrics in any of `earlyStoppingRounds`
-        // iterations goes to the expected direction, we should consider these `earlyStoppingRounds`
-        // as `onTrack`
-        onTrack |= maximizeEvaluationMetrics ?
-                criterion[iter - shift] >= criterion[iter - shift - 1] :
-                criterion[iter - shift] <= criterion[iter - shift - 1];
+  private static Integer tryGetIntFromObject(Object o) {
+    if (o instanceof Integer) {
+      return (int)o;
+    } else if (o instanceof String) {
+      try {
+        return Integer.parseInt((String)o);
+      } catch (NumberFormatException e) {
+        return null;
       }
-      if (!onTrack) {
+    } else {
+      return null;
+    }
+  }
+
+  private static boolean shouldPrint(Map<String, Object> params, int iter) {
+    Object silent = params.get("silent");
+    Integer silentInt = tryGetIntFromObject(silent);
+    if (silent != null) {
+      if (silent.equals("true") || silent.equals("True")
+              || (silentInt != null && silentInt != 0)) {
+        return false;  // "silent" will stop printing, otherwise go look at "verbose_eval"
+      }
+    }
+
+    Object verboseEval = params.get("verbose_eval");
+    Integer verboseEvalInt = tryGetIntFromObject(verboseEval);
+    if (verboseEval == null) {
+      return true; // Default to printing evalInfo
+    } else if (verboseEval.equals("false") || verboseEval.equals("False")) {
+      return false;
+    } else if (verboseEvalInt != null) {
+      if (verboseEvalInt == 0) {
         return false;
+      } else {
+        return iter % verboseEvalInt == 0;
       }
+    } else {
+      return true; // Don't understand the option, default to printing
     }
-    return onTrack;
   }
 
-  private static String getReversedDirection(Map<String, Object> params) {
-    String reversedDirection = null;
-    if (Boolean.valueOf(String.valueOf(params.get("maximize_evaluation_metrics")))) {
-      reversedDirection = "descending";
-    } else if (!Boolean.valueOf(String.valueOf(params.get("maximize_evaluation_metrics")))) {
-      reversedDirection = "ascending";
-    }
-    return reversedDirection;
+  static boolean shouldEarlyStop(int earlyStoppingRounds, int iter, int bestIteration) {
+    return iter - bestIteration >= earlyStoppingRounds;
   }
 
-  private static boolean getMetricsExpectedDirection(Map<String, Object> params) {
+  private static boolean isMaximizeEvaluation(Map<String, Object> params) {
     try {
       String maximize = String.valueOf(params.get("maximize_evaluation_metrics"));
       assert(maximize != null);

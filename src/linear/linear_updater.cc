@@ -11,12 +11,14 @@ DMLC_REGISTRY_ENABLE(::xgboost::LinearUpdaterReg);
 
 namespace xgboost {
 
-LinearUpdater* LinearUpdater::Create(const std::string& name) {
+LinearUpdater* LinearUpdater::Create(const std::string& name, GenericParameter const* lparam) {
   auto *e = ::dmlc::Registry< ::xgboost::LinearUpdaterReg>::Get()->Find(name);
   if (e == nullptr) {
     LOG(FATAL) << "Unknown linear updater " << name;
   }
-  return (e->body)();
+  auto p_linear = (e->body)();
+  p_linear->learner_param_ = lparam;
+  return p_linear;
 }
 
 }  // namespace xgboost
@@ -30,6 +32,6 @@ DMLC_REGISTRY_LINK_TAG(updater_shotgun);
 DMLC_REGISTRY_LINK_TAG(updater_coordinate);
 #ifdef XGBOOST_USE_CUDA
 DMLC_REGISTRY_LINK_TAG(updater_gpu_coordinate);
-#endif
+#endif  // XGBOOST_USE_CUDA
 }  // namespace linear
 }  // namespace xgboost

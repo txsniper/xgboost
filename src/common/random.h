@@ -17,6 +17,8 @@
 #include <numeric>
 #include <random>
 
+#include "xgboost/host_device_vector.h"
+
 namespace xgboost {
 namespace common {
 /*!
@@ -64,7 +66,7 @@ typedef CustomGlobalRandomEngine GlobalRandomEngine;
  * \brief global random engine
  */
 using GlobalRandomEngine = RandomEngine;
-#endif
+#endif  // XGBOOST_CUSTOMIZE_GLOBAL_PRNG
 
 /*!
  * \brief global singleton of a random engine.
@@ -82,33 +84,52 @@ GlobalRandomEngine& GlobalRandom(); // NOLINT(*)
  */
 
 class ColumnSampler {
-  std::shared_ptr<std::vector<int>> feature_set_tree_;
-  std::map<int, std::shared_ptr<std::vector<int>>> feature_set_level_;
+  std::shared_ptr<HostDeviceVector<bst_feature_t>> feature_set_tree_;
+  std::map<int, std::shared_ptr<HostDeviceVector<bst_feature_t>>> feature_set_level_;
   float colsample_bylevel_{1.0f};
   float colsample_bytree_{1.0f};
   float colsample_bynode_{1.0f};
+  GlobalRandomEngine rng_;
 
-  std::shared_ptr<std::vector<int>> ColSample
-    (std::shared_ptr<std::vector<int>> p_features, float colsample) const {
+  std::shared_ptr<HostDeviceVector<bst_feature_t>> ColSample(
+      std::shared_ptr<HostDeviceVector<bst_feature_t>> p_features, float colsample) {
     if (colsample == 1.0f) return p_features;
-    const auto& features = *p_features;
+    const auto& features = p_features->HostVector();
     CHECK_GT(features.size(), 0);
     int n = std::max(1, static_cast<int>(colsample * features.size()));
-    auto p_new_features = std::make_shared<std::vector<int>>();
+    auto p_new_features = std::make_shared<HostDeviceVector<bst_feature_t>>();
     auto& new_features = *p_new_features;
-    new_features.resize(features.size());
-    std::copy(features.begin(), features.end(), new_features.begin());
-    std::shuffle(new_features.begin(), new_features.end(), common::GlobalRandom());
-    new_features.resize(n);
-    std::sort(new_features.begin(), new_features.end());
-
-    // ensure that new_features are the same across ranks
-    rabit::Broadcast(&new_features, 0);
+    new_features.Resize(features.size());
+    std::copy(features.begin(), features.end(),
+              new_features.HostVector().begin());
+    std::shuffle(new_features.HostVector().begin(),
+                 new_features.HostVector().end(), rng_);
+    new_features.Resize(n);
+    std::sort(new_features.HostVector().begin(),
+              new_features.HostVector().end());
 
     return p_new_features;
   }
 
  public:
+  /**
+   * \brief Column sampler constructor.
+   * \note This constructor manually sets the rng seed
+   */
+  explicit ColumnSampler(uint32_t seed) {
+    rng_.seed(seed);
+  }
+
+  /**
+  * \brief Column sampler constructor.
+  * \note This constructor synchronizes the RNG seed across processes.
+  */
+  ColumnSampler() {
+    uint32_t seed = common::GlobalRandom()();
+    rabit::Broadcast(&seed, sizeof(seed), 0, "seed");
+    rng_.seed(seed);
+  }
+
   /**
    * \brief Initialise this object before use.
    *
@@ -125,13 +146,14 @@ class ColumnSampler {
     colsample_bynode_ = colsample_bynode;
 
     if (feature_set_tree_ == nullptr) {
-      feature_set_tree_ = std::make_shared<std::vector<int>>();
+      feature_set_tree_ = std::make_shared<HostDeviceVector<bst_feature_t>>();
     }
     Reset();
 
     int begin_idx = skip_index_0 ? 1 : 0;
-    feature_set_tree_->resize(num_col - begin_idx);
-    std::iota(feature_set_tree_->begin(), feature_set_tree_->end(), begin_idx);
+    feature_set_tree_->Resize(num_col - begin_idx);
+    std::iota(feature_set_tree_->HostVector().begin(),
+              feature_set_tree_->HostVector().end(), begin_idx);
 
     feature_set_tree_ = ColSample(feature_set_tree_, colsample_bytree_);
   }
@@ -140,19 +162,22 @@ class ColumnSampler {
    * \brief Resets this object.
    */
   void Reset() {
-    feature_set_tree_->clear();
+    feature_set_tree_->Resize(0);
     feature_set_level_.clear();
   }
 
   /**
    * \brief Samples a feature set.
-   * 
+   *
    * \param depth The tree depth of the node at which to sample.
    * \return The sampled feature set.
    * \note If colsample_bynode_ < 1.0, this method creates a new feature set each time it
    * is called. Therefore, it should be called only once per node.
+   * \note With distributed xgboost, this function must be called exactly once for the
+   * construction of each tree node, and must be called the same number of times in each
+   * process and with the same parameters to return the same feature set across processes.
    */
-  std::shared_ptr<std::vector<int>> GetFeatureSet(int depth) {
+  std::shared_ptr<HostDeviceVector<bst_feature_t>> GetFeatureSet(int depth) {
     if (colsample_bylevel_ == 1.0f && colsample_bynode_ == 1.0f) {
       return feature_set_tree_;
     }

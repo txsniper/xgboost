@@ -18,6 +18,8 @@ To verify your installation, run the following in Python:
 
   import xgboost as xgb
 
+.. _python_data_interface:
+
 Data Interface
 --------------
 The XGBoost python module is able to load data from:
@@ -26,6 +28,7 @@ The XGBoost python module is able to load data from:
 - Comma-separated values (CSV) file
 - NumPy 2D array
 - SciPy 2D sparse array
+- cuDF DataFrame
 - Pandas data frame, and
 - XGBoost binary buffer file.
 
@@ -50,8 +53,8 @@ The data is stored in a :py:class:`DMatrix <xgboost.DMatrix>` object.
 
   .. note:: Categorical features not supported
 
-    Note that XGBoost does not support categorical features; if your data contains
-    categorical features, load it as a NumPy array first and then perform
+    Note that XGBoost does not provide specialization for categorical features; if your data contains
+    categorical features, load it as a NumPy array first and then perform corresponding preprocessing steps like
     `one-hot encoding <http://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.OneHotEncoder.html>`_.
 
   .. note:: Use Pandas to load CSV files with headers
@@ -101,6 +104,10 @@ The data is stored in a :py:class:`DMatrix <xgboost.DMatrix>` object.
     w = np.random.rand(5, 1)
     dtrain = xgb.DMatrix(data, label=label, missing=-999.0, weight=w)
 
+When performing ranking tasks, the number of weights should be equal
+to number of groups.
+
+
 Setting Parameters
 ------------------
 XGBoost can use either a list of pairs or a dictionary to set :doc:`parameters </parameter>`. For instance:
@@ -109,7 +116,7 @@ XGBoost can use either a list of pairs or a dictionary to set :doc:`parameters <
 
   .. code-block:: python
 
-    param = {'max_depth': 2, 'eta': 1, 'silent': 1, 'objective': 'binary:logistic'}
+    param = {'max_depth': 2, 'eta': 1, 'objective': 'binary:logistic'}
     param['nthread'] = 4
     param['eval_metric'] = 'auc'
 
@@ -160,6 +167,10 @@ A saved model can be loaded as follows:
 
   bst = xgb.Booster({'nthread': 4})  # init model
   bst.load_model('model.bin')  # load data
+
+Methods including `update` and `boost` from `xgboost.Booster` are designed for
+internal usage only.  The wrapper function `xgboost.train` does some
+pre-configuration including setting up caches and some other parameters.
 
 Early Stopping
 --------------
@@ -215,4 +226,3 @@ When you use ``IPython``, you can use the :py:meth:`xgboost.to_graphviz` functio
 .. code-block:: python
 
   xgb.to_graphviz(bst, num_trees=2)
-

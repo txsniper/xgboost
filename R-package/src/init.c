@@ -1,5 +1,5 @@
 /* Copyright (c) 2015 by Contributors
- * 
+ *
  * This file was initially generated using the following R command:
  * tools::package_native_routine_registration_skeleton('.', con = 'src/init.c', character_only = F)
  * and edited to conform to xgboost C linter requirements. For details, see
@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <R_ext/Rdynload.h>
 
-/* FIXME: 
+/* FIXME:
 Check these declarations against the C/Fortran source code.
 */
 
@@ -23,8 +23,12 @@ extern SEXP XGBoosterGetAttrNames_R(SEXP);
 extern SEXP XGBoosterGetAttr_R(SEXP, SEXP);
 extern SEXP XGBoosterLoadModelFromRaw_R(SEXP, SEXP);
 extern SEXP XGBoosterLoadModel_R(SEXP, SEXP);
+extern SEXP XGBoosterSaveJsonConfig_R(SEXP handle);
+extern SEXP XGBoosterLoadJsonConfig_R(SEXP handle, SEXP value);
+extern SEXP XGBoosterSerializeToBuffer_R(SEXP handle);
+extern SEXP XGBoosterUnserializeFromBuffer_R(SEXP handle, SEXP raw);
 extern SEXP XGBoosterModelToRaw_R(SEXP);
-extern SEXP XGBoosterPredict_R(SEXP, SEXP, SEXP, SEXP);
+extern SEXP XGBoosterPredict_R(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP XGBoosterSaveModel_R(SEXP, SEXP);
 extern SEXP XGBoosterSetAttr_R(SEXP, SEXP, SEXP);
 extern SEXP XGBoosterSetParam_R(SEXP, SEXP, SEXP);
@@ -49,8 +53,12 @@ static const R_CallMethodDef CallEntries[] = {
   {"XGBoosterGetAttr_R",          (DL_FUNC) &XGBoosterGetAttr_R,          2},
   {"XGBoosterLoadModelFromRaw_R", (DL_FUNC) &XGBoosterLoadModelFromRaw_R, 2},
   {"XGBoosterLoadModel_R",        (DL_FUNC) &XGBoosterLoadModel_R,        2},
+  {"XGBoosterSaveJsonConfig_R",   (DL_FUNC) &XGBoosterSaveJsonConfig_R,   1},
+  {"XGBoosterLoadJsonConfig_R",   (DL_FUNC) &XGBoosterLoadJsonConfig_R,   2},
+  {"XGBoosterSerializeToBuffer_R",     (DL_FUNC) &XGBoosterSerializeToBuffer_R,     1},
+  {"XGBoosterUnserializeFromBuffer_R", (DL_FUNC) &XGBoosterUnserializeFromBuffer_R, 2},
   {"XGBoosterModelToRaw_R",       (DL_FUNC) &XGBoosterModelToRaw_R,       1},
-  {"XGBoosterPredict_R",          (DL_FUNC) &XGBoosterPredict_R,          4},
+  {"XGBoosterPredict_R",          (DL_FUNC) &XGBoosterPredict_R,          5},
   {"XGBoosterSaveModel_R",        (DL_FUNC) &XGBoosterSaveModel_R,        2},
   {"XGBoosterSetAttr_R",          (DL_FUNC) &XGBoosterSetAttr_R,          3},
   {"XGBoosterSetParam_R",         (DL_FUNC) &XGBoosterSetParam_R,         3},
@@ -70,7 +78,7 @@ static const R_CallMethodDef CallEntries[] = {
 
 #if defined(_WIN32)
 __declspec(dllexport)
-#endif
+#endif  // defined(_WIN32)
 void R_init_xgboost(DllInfo *dll) {
   R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
   R_useDynamicSymbols(dll, FALSE);

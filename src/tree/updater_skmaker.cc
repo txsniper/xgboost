@@ -22,6 +22,9 @@ DMLC_REGISTRY_FILE_TAG(updater_skmaker);
 
 class SketchMaker: public BaseMaker {
  public:
+  char const* Name() const override {
+    return "grow_skmaker";
+  }
   void Update(HostDeviceVector<GradientPair> *gpair,
               DMatrix *p_fmat,
               const std::vector<RegTree*> &trees) override {
@@ -78,31 +81,22 @@ class SketchMaker: public BaseMaker {
   // statistics needed in the gradient calculation
   struct SKStats {
     /*! \brief sum of all positive gradient */
-    double pos_grad;
+    double pos_grad { 0 };
     /*! \brief sum of all negative gradient */
-    double neg_grad;
+    double neg_grad { 0 };
     /*! \brief sum of hessian statistics */
-    double sum_hess;
+    double sum_hess { 0 };
+
     SKStats() = default;
-    // constructor
-    explicit SKStats(const TrainParam &param) {
-      this->Clear();
-    }
-    /*! \brief clear the statistics */
-    inline void Clear() {
-      neg_grad = pos_grad = sum_hess = 0.0f;
-    }
+
     // accumulate statistics
-    inline void Add(const std::vector<GradientPair> &gpair,
-                    const MetaInfo &info,
-                    bst_uint ridx) {
-      const GradientPair &b = gpair[ridx];
-      if (b.GetGrad() >= 0.0f) {
-        pos_grad += b.GetGrad();
+    void Add(const GradientPair& gpair) {
+      if (gpair.GetGrad() >= 0.0f) {
+        pos_grad += gpair.GetGrad();
       } else {
-        neg_grad -= b.GetGrad();
+        neg_grad -= gpair.GetGrad();
       }
-      sum_hess += b.GetHess();
+      sum_hess += gpair.GetHess();
     }
     /*! \brief calculate gain of the solution */
     inline double CalcGain(const TrainParam &param) const {
@@ -141,7 +135,7 @@ class SketchMaker: public BaseMaker {
     // number of rows in
     const size_t nrows = p_fmat->Info().num_row_;
     // start accumulating statistics
-    for (const auto &batch : p_fmat->GetSortedColumnBatches()) {
+    for (const auto &batch : p_fmat->GetBatches<SortedCSCPage>()) {
       // start enumeration
       const auto nsize = static_cast<bst_omp_uint>(batch.Size());
       #pragma omp parallel for schedule(dynamic, 1)
@@ -149,7 +143,7 @@ class SketchMaker: public BaseMaker {
         this->UpdateSketchCol(gpair, batch[fidx], tree,
                               node_stats_,
                               fidx,
-                              batch[fidx].size() == nrows,
+                              static_cast<size_t>(batch[fidx].size()) == nrows,
                               &thread_sketch_[omp_get_thread_num()]);
       }
     }
@@ -281,12 +275,22 @@ class SketchMaker: public BaseMaker {
       const int nid = qexpand_[wid];
       const SplitEntry &best = sol[wid];
       // set up the values
-      p_tree->Stat(nid).loss_chg = best.loss_chg;
       this->SetStats(nid, node_stats_[nid], p_tree);
       // now we know the solution in snode[nid], set split
       if (best.loss_chg > kRtEps) {
+        bst_float base_weight = node_stats_[nid].CalcWeight(param_);
+        bst_float left_leaf_weight =
+            CalcWeight(param_, best.left_sum.sum_grad, best.left_sum.sum_hess) *
+            param_.learning_rate;
+        bst_float right_leaf_weight =
+            CalcWeight(param_, best.right_sum.sum_grad,
+                       best.right_sum.sum_hess) *
+            param_.learning_rate;
         p_tree->ExpandNode(nid, best.SplitIndex(), best.split_value,
-                          best.DefaultLeft());
+                           best.DefaultLeft(), base_weight, left_leaf_weight,
+                           right_leaf_weight, best.loss_chg,
+                           node_stats_[nid].sum_hess,
+                           best.left_sum.GetHess(), best.right_sum.GetHess());
       } else {
         (*p_tree)[nid].SetLeaf(p_tree->Stat(nid).base_weight * param_.learning_rate);
       }
@@ -336,7 +340,9 @@ class SketchMaker: public BaseMaker {
       if (s.sum_hess >= param_.min_child_weight &&
           c.sum_hess >= param_.min_child_weight) {
         double loss_chg = s.CalcGain(param_) + c.CalcGain(param_) - root_gain;
-        best->Update(static_cast<bst_float>(loss_chg), fid, fsplits[i], false);
+        best->Update(static_cast<bst_float>(loss_chg), fid, fsplits[i], false,
+                     GradStats(s.pos_grad - s.neg_grad , s.sum_hess),
+                     GradStats(c.pos_grad - c.neg_grad, c.sum_hess));
       }
       // backward
       c.SetSubstract(feat_sum, s);
@@ -344,7 +350,9 @@ class SketchMaker: public BaseMaker {
       if (s.sum_hess >= param_.min_child_weight &&
           c.sum_hess >= param_.min_child_weight) {
         double loss_chg = s.CalcGain(param_) + c.CalcGain(param_) - root_gain;
-        best->Update(static_cast<bst_float>(loss_chg), fid, fsplits[i], true);
+        best->Update(static_cast<bst_float>(loss_chg), fid, fsplits[i], true,
+                     GradStats(s.pos_grad - s.neg_grad, s.sum_hess),
+                     GradStats(c.pos_grad - c.neg_grad, c.sum_hess));
       }
     }
     {
@@ -355,8 +363,10 @@ class SketchMaker: public BaseMaker {
           c.sum_hess >= param_.min_child_weight) {
         bst_float cpt = fsplits.back();
         double loss_chg = s.CalcGain(param_) + c.CalcGain(param_) - root_gain;
-        best->Update(static_cast<bst_float>(loss_chg),
-                     fid, cpt + std::abs(cpt) + 1.0f, false);
+        best->Update(static_cast<bst_float>(loss_chg), fid,
+                     cpt + std::abs(cpt) + 1.0f, false,
+                     GradStats(s.pos_grad - s.neg_grad, s.sum_hess),
+                     GradStats(c.pos_grad - c.neg_grad, c.sum_hess));
       }
     }
   }

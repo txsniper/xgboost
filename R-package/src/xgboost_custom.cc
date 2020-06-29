@@ -3,7 +3,7 @@
 // to change behavior of libxgboost
 
 #include <xgboost/logging.h>
-#include "src/common/random.h"
+#include "../../src/common/random.h"
 #include "./xgboost_R.h"
 
 // redirect the messages to R's console.
@@ -53,7 +53,7 @@ bool CheckNAN(double v) {
 double LogGamma(double v) {
   return lgammafn(v);
 }
-#endif
+#endif  // !defined(XGBOOST_USE_CUDA)
 // customize random engine.
 void CustomGlobalRandomEngine::seed(CustomGlobalRandomEngine::result_type val) {
   // ignore the seed

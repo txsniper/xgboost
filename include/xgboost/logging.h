@@ -1,22 +1,24 @@
 /*!
- * Copyright (c) 2015 by Contributors
+ * Copyright (c) 2015-2019 by Contributors
  * \file logging.h
- * \brief defines console logging options for xgboost.
- *  Use to enforce unified print behavior.
- *  For debug loggers, use LOG(INFO) and LOG(ERROR).
+ *
+ * \brief defines console logging options for xgboost.  Use to enforce unified print
+ *  behavior.
  */
 #ifndef XGBOOST_LOGGING_H_
 #define XGBOOST_LOGGING_H_
 
 #include <dmlc/logging.h>
-#include <dmlc/parameter.h>
 #include <dmlc/thread_local.h>
+
+#include <xgboost/base.h>
+#include <xgboost/parameter.h>
+
 #include <sstream>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
-#include "./base.h"
 
 namespace xgboost {
 
@@ -25,7 +27,7 @@ class BaseLogger {
   BaseLogger() {
 #if XGBOOST_LOG_WITH_TIME
     log_stream_ << "[" << dmlc::DateLogger().HumanDate() << "] ";
-#endif
+#endif  // XGBOOST_LOG_WITH_TIME
   }
   std::ostream& stream() { return log_stream_; }  // NOLINT
 
@@ -34,14 +36,10 @@ class BaseLogger {
 };
 
 // Parsing both silent and debug_verbose is to provide backward compatibility.
-struct ConsoleLoggerParam : public dmlc::Parameter<ConsoleLoggerParam> {
-  bool silent;  // deprecated.
+struct ConsoleLoggerParam : public XGBoostParameter<ConsoleLoggerParam> {
   int verbosity;
 
   DMLC_DECLARE_PARAMETER(ConsoleLoggerParam) {
-    DMLC_DECLARE_FIELD(silent)
-        .set_default(false)
-        .describe("Do not print information during training.");
     DMLC_DECLARE_FIELD(verbosity)
         .set_range(0, 3)
         .set_default(1)  // shows only warning
@@ -66,14 +64,9 @@ class ConsoleLogger : public BaseLogger {
   static ConsoleLoggerParam param_;
 
   LogVerbosity cur_verbosity_;
-  static void Configure(const std::map<std::string, std::string>& args);
 
  public:
-  template <typename ArgIter>
-  static void Configure(ArgIter begin, ArgIter end) {
-    std::map<std::string, std::string> args(begin, end);
-    Configure(args);
-  }
+  static void Configure(Args const& args);
 
   static LogVerbosity GlobalVerbosity();
   static LogVerbosity DefaultVerbosity();
@@ -116,14 +109,14 @@ class LogCallbackRegistry {
     return nullptr;
   }
 };
-#endif
+#endif  // !defined(XGBOOST_STRICT_R_MODE) || XGBOOST_STRICT_R_MODE == 0
 
 using LogCallbackRegistryStore = dmlc::ThreadLocalStore<LogCallbackRegistry>;
 
 // Redefines LOG_WARNING for controling verbosity
 #if defined(LOG_WARNING)
 #undef  LOG_WARNING
-#endif
+#endif  // defined(LOG_WARNING)
 #define LOG_WARNING                                                            \
   if (::xgboost::ConsoleLogger::ShouldLog(                                     \
           ::xgboost::ConsoleLogger::LV::kWarning))                             \
@@ -133,7 +126,7 @@ using LogCallbackRegistryStore = dmlc::ThreadLocalStore<LogCallbackRegistry>;
 // Redefines LOG_INFO for controling verbosity
 #if defined(LOG_INFO)
 #undef  LOG_INFO
-#endif
+#endif  // defined(LOG_INFO)
 #define LOG_INFO                                                               \
   if (::xgboost::ConsoleLogger::ShouldLog(                                     \
           ::xgboost::ConsoleLogger::LV::kInfo))                                \
@@ -142,7 +135,7 @@ using LogCallbackRegistryStore = dmlc::ThreadLocalStore<LogCallbackRegistry>;
 
 #if defined(LOG_DEBUG)
 #undef LOG_DEBUG
-#endif
+#endif  // defined(LOG_DEBUG)
 #define LOG_DEBUG                                                              \
   if (::xgboost::ConsoleLogger::ShouldLog(                                     \
           ::xgboost::ConsoleLogger::LV::kDebug))                               \
@@ -152,12 +145,21 @@ using LogCallbackRegistryStore = dmlc::ThreadLocalStore<LogCallbackRegistry>;
 // redefines the logging macro if not existed
 #ifndef LOG
 #define LOG(severity) LOG_##severity.stream()
-#endif
+#endif  // LOG
 
 // Enable LOG(CONSOLE) for print messages to console.
 #define LOG_CONSOLE ::xgboost::ConsoleLogger(           \
     ::xgboost::ConsoleLogger::LogVerbosity::kIgnore)
 // Enable LOG(TRACKER) for print messages to tracker
 #define LOG_TRACKER ::xgboost::TrackerLogger()
+
+#if defined(CHECK)
+#undef CHECK
+#define CHECK(cond)                                     \
+  if (XGBOOST_EXPECT(!(cond), false))                   \
+    dmlc::LogMessageFatal(__FILE__, __LINE__).stream()  \
+        << "Check failed: " #cond << ": "
+#endif  // defined(CHECK)
+
 }  // namespace xgboost.
 #endif  // XGBOOST_LOGGING_H_

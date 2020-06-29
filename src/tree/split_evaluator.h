@@ -11,9 +11,12 @@
 #include <dmlc/registry.h>
 #include <xgboost/base.h>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "param.h"
 
 #define ROOT_PARENT_ID (-1 & ((1U << 31) - 1))
 
@@ -31,8 +34,7 @@ class SplitEvaluator {
   virtual ~SplitEvaluator() = default;
 
   // Used to initialise any regularisation hyperparameters provided by the user
-  virtual void Init(
-      const std::vector<std::pair<std::string, std::string> >& args);
+  virtual void Init(const TrainParam* param);
 
   // Resets the SplitEvaluator to the state it was in after the Init was called
   virtual void Reset();
